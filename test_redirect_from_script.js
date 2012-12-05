@@ -16,7 +16,7 @@
  * and a third where internal script redirects in response to a server-side
  * 302 redirect.  The successful redirects are confirmed by the presence of a
  * custom response header.
- *    
+ *
  */
 
 const Cc = Components.classes;
