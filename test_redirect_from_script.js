@@ -11,10 +11,11 @@
  * testViaAsyncOpen() checks that internal redirects occur correctly when made
  * with nsIHTTPChannel.asyncOpen().
  *
- * Both of the above functions tests three requests, a simpler one that
+ * Both of the above functions tests three requests, a simple case that
  * redirects within a server; a second that redirects to a second webserver;
- * and a third that redirects after a server 302 redirect.  The successful
- * redirects are confirmed by the presence of a custom response header.
+ * and a third where internal script redirects in response to a server-side
+ * 302 redirect.  The successful redirects are confirmed by the presence of a
+ * custom response header.
  *    
  */
 
@@ -27,7 +28,7 @@ Cu.import("resource://testing-common/httpd.js");
 
 var httpServer = null, httpServer2 = null;
 
-// Test 1: a cross-path redirect on a single HTTP server
+// Test Part 1: a cross-path redirect on a single HTTP server
 // http://localhost:4444/bait -> http://localhost:4444/switch
 var baitPath = "/bait";
 var baitURI = "http://localhost:4444" + baitPath;
@@ -37,13 +38,13 @@ var redirectedPath = "/switch";
 var redirectedURI = "http://localhost:4444" + redirectedPath;
 var redirectedText = "worms are not tasty";
 
-// Test 2: Now, a redirect to a different server
+// Test Part 2: Now, a redirect to a different server
 // http://localhost:4444/bait2 -> http://localhost:4445/switch
 var bait2Path = "/bait2";
 var bait2URI = "http://localhost:4444" + bait2Path;
 var redirected2URI = "http://localhost:4445" + redirectedPath;
 
-// Test 3, begin with a serverside redirect that itself turns into an instance
+// Test Part 3, begin with a serverside redirect that itself turns into an instance
 // of Test 1
 var serverSideRedirectPath = "/frog";
 var serverSideRedirectURI = "http://localhost:4444" + serverSideRedirectPath;
@@ -94,7 +95,7 @@ Redirector.prototype = {
   // trigger a redirectTo(uri) redirect using the new API
   // before https://bugzilla.mozilla.org/show_bug.cgi?id=800799
   // the event was http-on-modify-request; now it's http-on-opening-request
-  register: function() 
+  register: function()
   {
     var obsService = Cc["@mozilla.org/observer-service;1"].
                      getService(Ci.nsIObserverService);
@@ -108,7 +109,7 @@ Redirector.prototype = {
 		}
   },
 
-  QueryInterface: function(iid) 
+  QueryInterface: function(iid)
   {
     if (iid.equals(Ci.nsIObserver) ||
         iid.equals(Ci.nsISupportsWeakReference) ||
@@ -117,7 +118,7 @@ Redirector.prototype = {
     throw Components.results.NS_NOINTERFACE;
   },
 
-  observe: function(subject, topic, data) 
+  observe: function(subject, topic, data)
   {
     if (topic == redirectOpportunity) {
       if (!(subject instanceof Ci.nsIHttpChannel)) return;
@@ -139,69 +140,52 @@ Redirector.prototype = {
 
 finished=false;
 
-function Redirector() 
+function Redirector()
 {
   this.register();
 }
 
-function testViaAsyncOpen() 
+function testViaAsyncOpen()
 {
+  // Test Part 1
   var chan = make_channel(baitURI);
   chan.asyncOpen(new ChannelListener(asyncVerifyCallback), null);
 }
 
-function testViaAsyncOpen2() 
+function testViaAsyncOpen2()
 {
   // The first half of this test has been verified, now run the second half
-  chan = make_channel(bait2URI);
+  var chan = make_channel(bait2URI);
   chan.asyncOpen(new ChannelListener(asyncVerifyCallback2), null);
 }
 
-function testViaAsyncOpen3() 
+function testViaAsyncOpen3()
 {
   // Now the third half
-  chan = make_channel(serverSideRedirectURI);
+  var chan = make_channel(serverSideRedirectURI);
   chan.asyncOpen(new ChannelListener(asyncVerifyCallback3), null);
 }
 
-
-function asyncVerifyCallback(req, buffer) 
+function makeVerifier(headerValue, nextTask)
 {
-  //dump("in asyncOpen callback\n");
-  if (!(req instanceof Ci.nsIHttpChannel))
-    do_throw(req + " is not an nsIHttpChannel, catastrophe imminent!");
+  var verifier = function(req, buffer)
+  {
+    if (!(req instanceof Ci.nsIHttpChannel))
+      do_throw(req + " is not an nsIHttpChannel, catastrophe imminent!");
 
-  var httpChannel = req.QueryInterface(Ci.nsIHttpChannel);
-  do_check_eq(httpChannel.getResponseHeader(testHeaderName), testHeaderVal);
-  do_check_eq(buffer, redirectedText);
-  testViaAsyncOpen2();
+    var httpChannel = req.QueryInterface(Ci.nsIHttpChannel);
+    do_check_eq(httpChannel.getResponseHeader(testHeaderName), headerValue);
+    do_check_eq(buffer, redirectedText);
+    nextTask();
+  };
+  return verifier;
 }
 
-function asyncVerifyCallback2(req, buffer) 
-{
-  //dump("in asyncOpen callback2\n");
-  if (!(req instanceof Ci.nsIHttpChannel))
-    do_throw(req + " is not an nsIHttpChannel, catastrophe imminent!");
+asyncVerifyCallback  = makeVerifier(testHeaderVal,  testViaAsyncOpen2);
+asyncVerifyCallback2 = makeVerifier(testHeaderVal2, testViaAsyncOpen3);
+asyncVerifyCallback3 = makeVerifier(testHeaderVal,  done);
 
-  var httpChannel = req.QueryInterface(Ci.nsIHttpChannel);
-  do_check_eq(httpChannel.getResponseHeader(testHeaderName), testHeaderVal2);
-  do_check_eq(buffer, redirectedText);
-  testViaAsyncOpen3();
-}
-
-function asyncVerifyCallback3(req, buffer) 
-{
-  //dump("in asyncOpen callback2\n");
-  if (!(req instanceof Ci.nsIHttpChannel))
-    do_throw(req + " is not an nsIHttpChannel, catastrophe imminent!");
-
-  var httpChannel = req.QueryInterface(Ci.nsIHttpChannel);
-  do_check_eq(httpChannel.getResponseHeader(testHeaderName), testHeaderVal);
-  do_check_eq(buffer, redirectedText);
-  done();
-}
-
-function testViaXHR() 
+function testViaXHR()
 {
   var xhr = Cc["@mozilla.org/xmlextras/xmlhttprequest;1"];
 
@@ -218,7 +202,7 @@ function testViaXHR()
   do_check_eq(req.response, redirectedText);
 }
 
-function done() 
+function done()
 {
   dump("done()");
   httpServer.stop(function () {httpServer2.stop(do_test_finished);});
