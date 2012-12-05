@@ -11,12 +11,13 @@
  * testViaAsyncOpen() checks that internal redirects occur correctly when made
  * with nsIHTTPChannel.asyncOpen().
  *
- * Both of the above functions tests three requests, a simple case that
+ * Both of the above functions tests four requests, a simple case that
  * redirects within a server; a second that redirects to a second webserver;
  * and a third where internal script redirects in response to a server-side
- * 302 redirect.  The successful redirects are confirmed by the presence of a
- * custom response header.
- *
+ * 302 redirect, and a fourth where one internal script redirects in response
+ * to another's redirect.  The successful redirects are confirmed by the
+ * presence of a custom response header.
+ * 
  */
 
 const Cc = Components.classes;
@@ -45,9 +46,14 @@ var bait2URI = "http://localhost:4444" + bait2Path;
 var redirected2URI = "http://localhost:4445" + redirectedPath;
 
 // Test Part 3, begin with a serverside redirect that itself turns into an instance
-// of Test 1
-var serverSideRedirectPath = "/frog";
-var serverSideRedirectURI = "http://localhost:4444" + serverSideRedirectPath;
+// of Test Part 1
+var bait3Path = "/frog";
+var bait3URI = "http://localhost:4444" + bait3Path;
+
+// Test Part 4, begin with this client-side redirect and which then redirects
+// to an instance of Test Part 1
+var bait4Path = "/prince";
+var bait4URI = "http://localhost:4444" + bait4Path;
 
 var testHeaderName = "X-Redirected-By-Script"
 var testHeaderVal = "Yes indeed";
@@ -82,12 +88,14 @@ function redirected2Handler(metadata, response)
   response.setHeader(testHeaderName, testHeaderVal2);
 }
 
-function serverSideRedirectHandler(metadata, response)
+function bait3Handler(metadata, response)
 {
   response.setHeader("Content-Type", "text/html", false);  
   response.setStatusLine(metadata.httpVersion, 302, "Found");
   response.setHeader("Location", redirectedURI);
 }
+
+bait4Handler = baitHandler;
 
 redirectOpportunity = "http-on-opening-request";
 Redirector.prototype = {
@@ -128,6 +136,7 @@ Redirector.prototype = {
       var target = null;
       if (channel.URI.spec == baitURI)  target = redirectedURI;
       if (channel.URI.spec == bait2URI) target = redirected2URI;
+      if (channel.URI.spec == bait4URI) target = baitURI;
       // if we have a target, redirect there
       if (target) {
         var tURI = ioservice.newURI(target, null, null);
@@ -145,29 +154,21 @@ function Redirector()
   this.register();
 }
 
-function testViaAsyncOpen()
+function makeAsyncOpenTest(uri, verifier)
 {
-  // Test Part 1
-  var chan = make_channel(baitURI);
-  chan.asyncOpen(new ChannelListener(asyncVerifyCallback), null);
-}
-
-function testViaAsyncOpen2()
-{
-  // The first half of this test has been verified, now run the second half
-  var chan = make_channel(bait2URI);
-  chan.asyncOpen(new ChannelListener(asyncVerifyCallback2), null);
-}
-
-function testViaAsyncOpen3()
-{
-  // Now the third half
-  var chan = make_channel(serverSideRedirectURI);
-  chan.asyncOpen(new ChannelListener(asyncVerifyCallback3), null);
+  // Produce a function to run an asyncOpen test
+  var test = function()
+  {
+    var chan = make_channel(uri);
+    chan.asyncOpen(new ChannelListener(verifier), null);
+  };
+  return test;
 }
 
 function makeVerifier(headerValue, nextTask)
 {
+  // Produce a callback function which checks for the presence of headerValue,
+  // and then continues to the next async test task
   var verifier = function(req, buffer)
   {
     if (!(req instanceof Ci.nsIHttpChannel))
@@ -181,24 +182,36 @@ function makeVerifier(headerValue, nextTask)
   return verifier;
 }
 
-asyncVerifyCallback  = makeVerifier(testHeaderVal,  testViaAsyncOpen2);
-asyncVerifyCallback2 = makeVerifier(testHeaderVal2, testViaAsyncOpen3);
-asyncVerifyCallback3 = makeVerifier(testHeaderVal,  done);
+// The tests and verifier callbacks depend on each other, and therefore need
+// to be defined in the reverse of the order they are called in.  It is
+// therefore best to read this stanza backwards!
+asyncVerifyCallback4 = makeVerifier     (testHeaderVal,  done);
+testViaAsyncOpen4    = makeAsyncOpenTest(bait4URI,       asyncVerifyCallback4);
+asyncVerifyCallback3 = makeVerifier     (testHeaderVal,  testViaAsyncOpen4);
+testViaAsyncOpen3    = makeAsyncOpenTest(bait3URI,       asyncVerifyCallback3);
+asyncVerifyCallback2 = makeVerifier     (testHeaderVal2, testViaAsyncOpen3);
+testViaAsyncOpen2    = makeAsyncOpenTest(bait2URI,       asyncVerifyCallback2);
+asyncVerifyCallback  = makeVerifier     (testHeaderVal,  testViaAsyncOpen2);
+testViaAsyncOpen     = makeAsyncOpenTest(baitURI,        asyncVerifyCallback);
 
 function testViaXHR()
 {
+  runXHRTest(baitURI,  testHeaderVal);
+  runXHRTest(bait2URI, testHeaderVal2);
+  runXHRTest(bait3URI, testHeaderVal);
+  runXHRTest(bait4URI, testHeaderVal);
+}
+
+function runXHRTest(uri, headerValue)
+{
+  // Check that making an XHR request for uri winds up redirecting to a result with the
+  // appropriate headerValue
   var xhr = Cc["@mozilla.org/xmlextras/xmlhttprequest;1"];
 
   var req = xhr.createInstance(Ci.nsIXMLHttpRequest);
-  req.open("GET", baitURI, false);
+  req.open("GET", uri, false);
   req.send();
-  do_check_eq(req.getResponseHeader(testHeaderName), testHeaderVal);
-  do_check_eq(req.response, redirectedText);
-
-  req = xhr.createInstance(Ci.nsIXMLHttpRequest);
-  req.open("GET", bait2URI, false);
-  req.send();
-  do_check_eq(req.getResponseHeader(testHeaderName), testHeaderVal2);
+  do_check_eq(req.getResponseHeader(testHeaderName), headerValue);
   do_check_eq(req.response, redirectedText);
 }
 
@@ -213,8 +226,8 @@ function run_test()
   httpServer = new HttpServer();
   httpServer.registerPathHandler(baitPath, baitHandler);
   httpServer.registerPathHandler(bait2Path, baitHandler);
-  httpServer.registerPathHandler(serverSideRedirectPath, 
-                                 serverSideRedirectHandler);
+  httpServer.registerPathHandler(bait3Path, bait3Handler);
+  httpServer.registerPathHandler(bait4Path, bait4Handler);
   httpServer.registerPathHandler(redirectedPath, redirectedHandler);
   httpServer.start(4444);
   httpServer2 = new HttpServer();
