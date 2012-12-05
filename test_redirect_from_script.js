@@ -1,21 +1,21 @@
 /*
  * Test whether the rewrite-requests-from-script API implemented here:
- *   https://bugzilla.mozilla.org/show_bug.cgi?id=765934
- *   is functioning correctly
+ * https://bugzilla.mozilla.org/show_bug.cgi?id=765934 is functioning
+ * correctly
  *
  * The test has the following components:
  *
- * testViaXHR() checks that internal redirects occur correctly for 
- * requests made with nsIXMLHttpRequest objects.
+ * testViaXHR() checks that internal redirects occur correctly for requests
+ * made with nsIXMLHttpRequest objects.
  *
- * testViaAsyncOpen() checks that internal redirects occur correctly when
- * made with nsIHTTPChannel.asyncOpen().
+ * testViaAsyncOpen() checks that internal redirects occur correctly when made
+ * with nsIHTTPChannel.asyncOpen().
  *
- * Both of the above functions tests two requests, a simpler one that
- * redirects within a server, and second that redirects to a second webserver.
- * The successful redirect is confirmed by the presence of a custom response 
- * header.
- *
+ * Both of the above functions tests three requests, a simpler one that
+ * redirects within a server; a second that redirects to a second webserver;
+ * and a third that redirects after a server 302 redirect.  The successful
+ * redirects are confirmed by the presence of a custom response header.
+ *    
  */
 
 const Cc = Components.classes;
@@ -27,7 +27,7 @@ Cu.import("resource://testing-common/httpd.js");
 
 var httpServer = null, httpServer2 = null;
 
-// Simpler test: a cross-path redirect on a single HTTP server
+// Test 1: a cross-path redirect on a single HTTP server
 // http://localhost:4444/bait -> http://localhost:4444/switch
 var baitPath = "/bait";
 var baitURI = "http://localhost:4444" + baitPath;
@@ -37,11 +37,16 @@ var redirectedPath = "/switch";
 var redirectedURI = "http://localhost:4444" + redirectedPath;
 var redirectedText = "worms are not tasty";
 
-// Now, a redirect to a different server
+// Test 2: Now, a redirect to a different server
 // http://localhost:4444/bait2 -> http://localhost:4445/switch
 var bait2Path = "/bait2";
 var bait2URI = "http://localhost:4444" + bait2Path;
 var redirected2URI = "http://localhost:4445" + redirectedPath;
+
+// Test 3, begin with a serverside redirect that itself turns into an instance
+// of Test 1
+var serverSideRedirectPath = "/frog";
+var serverSideRedirectURI = "http://localhost:4444" + serverSideRedirectPath;
 
 var testHeaderName = "X-Redirected-By-Script"
 var testHeaderVal = "Yes indeed";
@@ -74,6 +79,13 @@ function redirected2Handler(metadata, response)
   response.setHeader("Content-Type", "text/html", false);
   response.bodyOutputStream.write(redirectedText, redirectedText.length);
   response.setHeader(testHeaderName, testHeaderVal2);
+}
+
+function serverSideRedirectHandler(metadata, response)
+{
+  response.setHeader("Content-Type", "text/html", false);  
+  response.setStatusLine(metadata.httpVersion, 302, "Found");
+  response.setHeader("Location", redirectedURI);
 }
 
 redirectOpportunity = "http-on-opening-request";
@@ -145,9 +157,17 @@ function testViaAsyncOpen2()
   chan.asyncOpen(new ChannelListener(asyncVerifyCallback2), null);
 }
 
+function testViaAsyncOpen3() 
+{
+  // Now the third half
+  chan = make_channel(serverSideRedirectURI);
+  chan.asyncOpen(new ChannelListener(asyncVerifyCallback3), null);
+}
+
+
 function asyncVerifyCallback(req, buffer) 
 {
-  dump("in asyncOpen callback\n");
+  //dump("in asyncOpen callback\n");
   if (!(req instanceof Ci.nsIHttpChannel))
     do_throw(req + " is not an nsIHttpChannel, catastrophe imminent!");
 
@@ -159,12 +179,24 @@ function asyncVerifyCallback(req, buffer)
 
 function asyncVerifyCallback2(req, buffer) 
 {
-  dump("in asyncOpen callback2\n");
+  //dump("in asyncOpen callback2\n");
   if (!(req instanceof Ci.nsIHttpChannel))
     do_throw(req + " is not an nsIHttpChannel, catastrophe imminent!");
 
-  var hc = req.QueryInterface(Ci.nsIHttpChannel);
-  do_check_eq(hc.getResponseHeader(testHeaderName), testHeaderVal2);
+  var httpChannel = req.QueryInterface(Ci.nsIHttpChannel);
+  do_check_eq(httpChannel.getResponseHeader(testHeaderName), testHeaderVal2);
+  do_check_eq(buffer, redirectedText);
+  testViaAsyncOpen3();
+}
+
+function asyncVerifyCallback3(req, buffer) 
+{
+  //dump("in asyncOpen callback2\n");
+  if (!(req instanceof Ci.nsIHttpChannel))
+    do_throw(req + " is not an nsIHttpChannel, catastrophe imminent!");
+
+  var httpChannel = req.QueryInterface(Ci.nsIHttpChannel);
+  do_check_eq(httpChannel.getResponseHeader(testHeaderName), testHeaderVal);
   do_check_eq(buffer, redirectedText);
   done();
 }
@@ -197,6 +229,8 @@ function run_test()
   httpServer = new HttpServer();
   httpServer.registerPathHandler(baitPath, baitHandler);
   httpServer.registerPathHandler(bait2Path, baitHandler);
+  httpServer.registerPathHandler(serverSideRedirectPath, 
+                                 serverSideRedirectHandler);
   httpServer.registerPathHandler(redirectedPath, redirectedHandler);
   httpServer.start(4444);
   httpServer2 = new HttpServer();
