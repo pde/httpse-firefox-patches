@@ -50,7 +50,7 @@ var redirected2URI = "http://localhost:4445" + redirectedPath;
 var bait3Path = "/frog";
 var bait3URI = "http://localhost:4444" + bait3Path;
 
-// Test Part 4, begin with this client-side redirect and which then redirects
+// Test Part 4, begin with this client-side redirect, which then redirects
 // to an instance of Test Part 1
 var bait4Path = "/prince";
 var bait4URI = "http://localhost:4444" + bait4Path;
@@ -59,6 +59,10 @@ var testHeaderName = "X-Redirected-By-Script"
 var testHeaderVal = "Yes indeed";
 var testHeaderVal2 = "Very Yes";
 
+// not great, but we believe asyncOnChannelRedirect will be required to pass
+// test 4 sice FF 18+ because http-on-opening-request doesn't fire for
+// internal redirects
+useAsyncOnChannelRedirect = true;
 
 function make_channel(url, callback, ctx) {
   var ios = Cc["@mozilla.org/network/io-service;1"].
@@ -95,8 +99,6 @@ function bait3Handler(metadata, response)
   response.setHeader("Location", redirectedURI);
 }
 
-bait4Handler = baitHandler;
-
 redirectOpportunity = "http-on-opening-request";
 Redirector.prototype = {
   // This class observes the an event and uses that to
@@ -105,6 +107,7 @@ Redirector.prototype = {
   // the event was http-on-modify-request; now it's http-on-opening-request
   register: function()
   {
+    // nsIObserver registration
     var obsService = Cc["@mozilla.org/observer-service;1"].
                      getService(Ci.nsIObserverService);
 		try {
@@ -115,15 +118,34 @@ Redirector.prototype = {
 			redirectOpportunity = "http-on-modify-request";
 			obsService.addObserver(this, redirectOpportunity, true);
 		}
+
+    if (useAsyncOnChannelRedirect) {
+      // nsIChannelEventSink registration
+
+      const sinkCID = Components.ID("{14aa4b81-e266-45cb-88f8-89595dece114}");
+      const sinkContract = "@mozilla.org/network/unittest/channeleventsink;1";
+      var catMan = Cc["@mozilla.org/categorymanager;1"].
+                   getService(Ci.nsICategoryManager);
+      catMan.addCategoryEntry("net-channel-event-sinks", "unit test",
+                              sinkContract, false, true);       
+    }
   },
 
   QueryInterface: function(iid)
   {
     if (iid.equals(Ci.nsIObserver) ||
         iid.equals(Ci.nsISupportsWeakReference) ||
-        iid.equals(Ci.nsISupports))
+        iid.equals(Ci.nsISupports) ||
+        iid.equals(Ci.nsIFactory) ||
+        (iid.equals(Ci.nsIChannelEventSink) && useAsyncOnChannelRedirect))
       return this;
     throw Components.results.NS_NOINTERFACE;
+  },
+
+  createInstance: function eventsink_ci(outer, iid) {
+    if (outer)
+      throw Components.results.NS_ERROR_NO_AGGREGATION;
+    return this.QueryInterface(iid);
   },
 
   observe: function(subject, topic, data)
@@ -131,19 +153,33 @@ Redirector.prototype = {
     if (topic == redirectOpportunity) {
       if (!(subject instanceof Ci.nsIHttpChannel)) return;
       var channel = subject.QueryInterface(Ci.nsIHttpChannel);
-      var ioservice = Cc["@mozilla.org/network/io-service;1"].
-                        getService(Ci.nsIIOService);
-      var target = null;
-      if (channel.URI.spec == baitURI)  target = redirectedURI;
-      if (channel.URI.spec == bait2URI) target = redirected2URI;
-      if (channel.URI.spec == bait4URI) target = baitURI;
-      // if we have a target, redirect there
-      if (target) {
-        var tURI = ioservice.newURI(target, null, null);
-        try       { channel.redirectTo(tURI); }
-        catch (e) { do_throw("Exception in redirectTo " + e + "\n"); }
-      }
+      this.doRedirect(channel);
     }
+  },
+
+  doRedirect: function(channel)
+  {
+    var ioservice = Cc["@mozilla.org/network/io-service;1"].
+                      getService(Ci.nsIIOService);
+    var target = null;
+    if (channel.URI.spec == baitURI)  target = redirectedURI;
+    if (channel.URI.spec == bait2URI) target = redirected2URI;
+    if (channel.URI.spec == bait4URI) target = baitURI;
+      // if we have a target, redirect there
+    if (target) {
+      var tURI = ioservice.newURI(target, null, null);
+      try       { channel.redirectTo(tURI); }
+      catch (e) { do_throw("Exception in redirectTo " + e + "\n"); }
+    }
+  },
+
+  asyncOnChannelRedirect: function(oldChannel, newChannel, flags, callback) 
+  {
+    dump("in on channel redirect!!!!!!!!!!!!!!!!!!!");
+    if (!(newChannel instanceof CI.nsIHttpChannel))
+      do_throw("Redirecting to something that isn't an nsIHttpChannel!");
+    doRedirect(newChannel);
+    callback.onRedirectVerifyCallback(0);
   }
 }
 
@@ -182,9 +218,9 @@ function makeVerifier(headerValue, nextTask)
   return verifier;
 }
 
-// The tests and verifier callbacks depend on each other, and therefore need
-// to be defined in the reverse of the order they are called in.  It is
-// therefore best to read this stanza backwards!
+// The tests and verifier callbacks depend on each other, and so need
+// to be defined in the reverse of the order they are called in.  So it is
+// best to read this stanza backwards!
 asyncVerifyCallback4 = makeVerifier     (testHeaderVal,  done);
 testViaAsyncOpen4    = makeAsyncOpenTest(bait4URI,       asyncVerifyCallback4);
 asyncVerifyCallback3 = makeVerifier     (testHeaderVal,  testViaAsyncOpen4);
@@ -217,17 +253,18 @@ function runXHRTest(uri, headerValue)
 
 function done()
 {
-  dump("done()");
   httpServer.stop(function () {httpServer2.stop(do_test_finished);});
 }
 
 function run_test()
 {
   httpServer = new HttpServer();
-  httpServer.registerPathHandler(baitPath, baitHandler);
+  // for these three, we're never supposed to get to the bait
+  httpServer.registerPathHandler(baitPath,  baitHandler);
   httpServer.registerPathHandler(bait2Path, baitHandler);
+  httpServer.registerPathHandler(bait4Path, baitHandler);
+  // in Test 3, the bait is a server-side redirect
   httpServer.registerPathHandler(bait3Path, bait3Handler);
-  httpServer.registerPathHandler(bait4Path, bait4Handler);
   httpServer.registerPathHandler(redirectedPath, redirectedHandler);
   httpServer.start(4444);
   httpServer2 = new HttpServer();
