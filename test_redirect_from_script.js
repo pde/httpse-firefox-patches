@@ -141,7 +141,7 @@ Redirector.prototype = {
         iid.equals(Ci.nsISupportsWeakReference) ||
         iid.equals(Ci.nsISupports) ||
         iid.equals(Ci.nsIFactory) ||
-        (iid.equals(Ci.nsIChannelEventSink) && useAsyncOnChannelRedirect))
+        iid.equals(Ci.nsIChannelEventSink))
       return this;
     throw Components.results.NS_NOINTERFACE;
   },
@@ -157,8 +157,6 @@ Redirector.prototype = {
       return this;
     throw Components.results.NS_ERROR_NO_INTERFACE;
   },
-
-
 
   observe: function(subject, topic, data)
   {
@@ -193,7 +191,7 @@ Redirector.prototype = {
     if (!(newChannel instanceof CI.nsIHttpChannel))
       do_throw("Redirecting to something that isn't an nsIHttpChannel!");
     doRedirect(newChannel);
-    //callback.onRedirectVerifyCallback(0);
+    callback.onRedirectVerifyCallback(Cr.NS_OK);
   }
 }
 
@@ -256,8 +254,8 @@ function testViaXHR()
   runXHRTest(bait2URI, testHeaderVal2);
   dump("Test 3\n");
   runXHRTest(bait3URI, testHeaderVal);
-  //dump("Test 4\n");
-  //runXHRTest(bait4URI, testHeaderVal);
+  dump("Test 4\n");
+  runXHRTest(bait4URI, testHeaderVal);
 }
 
 function runXHRTest(uri, headerValue)
@@ -296,7 +294,7 @@ function run_test()
   redirected = new Redirector();
 
   testViaXHR();
-  testViaAsyncOpen();  // will call done() asynchronously for cleanup
+  //testViaAsyncOpen();  // will call done() asynchronously for cleanup
 
-  do_test_pending();
+  //do_test_pending();
 }
