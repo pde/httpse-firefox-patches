@@ -51,13 +51,20 @@ var bait2Path = "/bait2";
 var bait2URI = "http://localhost:4444" + bait2Path;
 var redirected2URI = "http://localhost:4445" + redirectedPath;
 
-// Test Part 3, begin with a serverside redirect that itself turns into an instance
-// of Test Part 1
+// Test Part 3, begin with a serverside redirect that itself turns into an
+// instance of Test Part 1, ie:
+// http://localhost:4444/frog (serverside 302) -> http://localhost:4444/bait
+// then
+// http://localhost:4444/bait (per Test 1) -> http://localhost:4444/switch
+
 var bait3Path = "/frog";
 var bait3URI = "http://localhost:4444" + bait3Path;
 
 // Test Part 4, begin with this client-side redirect, which then redirects
 // to an instance of Test Part 1
+// http://localhost:4444/prince (via redirectTo()) -> http://localhost:4444/bait
+// then
+// http://localhost:4444/bait (per Test 1) -> http://localhost:4444/switch
 var bait4Path = "/prince";
 var bait4URI = "http://localhost:4444" + bait4Path;
 
@@ -202,6 +209,7 @@ function Redirector()
   this.register();
 }
 
+/*
 function makeAsyncOpenTest(uri, verifier)
 {
   // Produce a function to run an asyncOpen test.  It opens a request for
@@ -245,6 +253,7 @@ asyncVerifyCallback2 = makeVerifier     (testHeaderVal2, testViaAsyncOpen3);
 testViaAsyncOpen2    = makeAsyncOpenTest(bait2URI,       asyncVerifyCallback2);
 asyncVerifyCallback  = makeVerifier     (testHeaderVal,  testViaAsyncOpen2);
 testViaAsyncOpen     = makeAsyncOpenTest(baitURI,        asyncVerifyCallback);
+*/
 
 function testViaXHR()
 {
