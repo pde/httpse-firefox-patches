@@ -152,6 +152,14 @@ Redirector.prototype = {
     return this.QueryInterface(iid);
   },
 
+  getInterface: function eventsink_gi(iid) {
+    if (iid.equals(Components.interfaces.nsIChannelEventSink))
+      return this;
+    throw Components.results.NS_ERROR_NO_INTERFACE;
+  },
+
+
+
   observe: function(subject, topic, data)
   {
     if (topic == redirectOpportunity) {
@@ -185,7 +193,7 @@ Redirector.prototype = {
     if (!(newChannel instanceof CI.nsIHttpChannel))
       do_throw("Redirecting to something that isn't an nsIHttpChannel!");
     doRedirect(newChannel);
-    callback.onRedirectVerifyCallback(0);
+    //callback.onRedirectVerifyCallback(0);
   }
 }
 
@@ -198,7 +206,8 @@ function Redirector()
 
 function makeAsyncOpenTest(uri, verifier)
 {
-  // Produce a function to run an asyncOpen test
+  // Produce a function to run an asyncOpen test.  It opens a request for
+  // uri, and then arranges for verifier to be called to check the results
   var test = function()
   {
     var chan = make_channel(uri);
@@ -241,13 +250,13 @@ testViaAsyncOpen     = makeAsyncOpenTest(baitURI,        asyncVerifyCallback);
 
 function testViaXHR()
 {
-  dump("Test 1");
+  dump("Test 1\n");
   runXHRTest(baitURI,  testHeaderVal);
-  dump("Test 2");
+  dump("Test 2\n");
   runXHRTest(bait2URI, testHeaderVal2);
-  dump("Test 3");
+  dump("Test 3\n");
   runXHRTest(bait3URI, testHeaderVal);
-  //dump("Test 4");
+  //dump("Test 4\n");
   //runXHRTest(bait4URI, testHeaderVal);
 }
 
