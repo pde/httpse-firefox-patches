@@ -80,7 +80,9 @@ useAsyncOnChannelRedirect = true;
 function make_channel(url, callback, ctx) {
   var ios = Cc["@mozilla.org/network/io-service;1"].
             getService(Ci.nsIIOService);
-  return ios.newChannel(url, "", null);
+  var chan = ios.newChannel(url, "", null);
+  chan.notificationCallbacks = redirectorInstance;
+  return chan;
 }
 
 function baitHandler(metadata, response)
@@ -209,7 +211,6 @@ function Redirector()
   this.register();
 }
 
-/*
 function makeAsyncOpenTest(uri, verifier)
 {
   // Produce a function to run an asyncOpen test.  It opens a request for
@@ -246,14 +247,13 @@ function makeVerifier(headerValue, nextTask)
 // Skip test 4
 asyncVerifyCallback4 = makeVerifier     (testHeaderVal,  done);
 testViaAsyncOpen4    = makeAsyncOpenTest(bait4URI,       asyncVerifyCallback4);
-//asyncVerifyCallback3 = makeVerifier     (testHeaderVal,  testViaAsyncOpen4);
-asyncVerifyCallback3 = makeVerifier     (testHeaderVal,  done); // skip test 4
+asyncVerifyCallback3 = makeVerifier     (testHeaderVal,  testViaAsyncOpen4);
+//asyncVerifyCallback3 = makeVerifier     (testHeaderVal,  done); // skip test 4
 testViaAsyncOpen3    = makeAsyncOpenTest(bait3URI,       asyncVerifyCallback3);
 asyncVerifyCallback2 = makeVerifier     (testHeaderVal2, testViaAsyncOpen3);
 testViaAsyncOpen2    = makeAsyncOpenTest(bait2URI,       asyncVerifyCallback2);
 asyncVerifyCallback  = makeVerifier     (testHeaderVal,  testViaAsyncOpen2);
 testViaAsyncOpen     = makeAsyncOpenTest(baitURI,        asyncVerifyCallback);
-*/
 
 function testViaXHR()
 {
@@ -300,10 +300,10 @@ function run_test()
   httpServer2.registerPathHandler(redirectedPath, redirected2Handler);
   httpServer2.start(4445);
 
-  redirected = new Redirector();
+  redirectorInstance = new Redirector();
 
-  testViaXHR();
-  //testViaAsyncOpen();  // will call done() asynchronously for cleanup
+  //testViaXHR();
+  testViaAsyncOpen();  // will call done() asynchronously for cleanup
 
-  //do_test_pending();
+  do_test_pending();
 }
