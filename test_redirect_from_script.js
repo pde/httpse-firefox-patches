@@ -155,48 +155,6 @@ function Redirector()
   this.register();
 }
 
-function makeAsyncOpenTest(uri, verifier)
-{
-  // Produce a function to run an asyncOpen test
-  var test = function()
-  {
-    var chan = make_channel(uri);
-    chan.asyncOpen(new ChannelListener(verifier), null);
-  };
-  return test;
-}
-
-function makeVerifier(headerValue, nextTask)
-{
-  // Produce a callback function which checks for the presence of headerValue,
-  // and then continues to the next async test task
-  var verifier = function(req, buffer)
-  {
-    if (!(req instanceof Ci.nsIHttpChannel))
-      do_throw(req + " is not an nsIHttpChannel, catastrophe imminent!");
-
-    var httpChannel = req.QueryInterface(Ci.nsIHttpChannel);
-    do_check_eq(httpChannel.getResponseHeader(testHeaderName), headerValue);
-    do_check_eq(buffer, redirectedText);
-    nextTask();
-  };
-  return verifier;
-}
-
-// The tests and verifier callbacks depend on each other, and therefore need
-// to be defined in the reverse of the order they are called in.  It is
-// therefore best to read this stanza backwards!
-// Skip test 4
-asyncVerifyCallback4 = makeVerifier     (testHeaderVal,  done);
-testViaAsyncOpen4    = makeAsyncOpenTest(bait4URI,       asyncVerifyCallback4);
-//asyncVerifyCallback3 = makeVerifier     (testHeaderVal,  testViaAsyncOpen4);
-asyncVerifyCallback3 = makeVerifier     (testHeaderVal,  done); // skip test 4
-testViaAsyncOpen3    = makeAsyncOpenTest(bait3URI,       asyncVerifyCallback3);
-asyncVerifyCallback2 = makeVerifier     (testHeaderVal2, testViaAsyncOpen3);
-testViaAsyncOpen2    = makeAsyncOpenTest(bait2URI,       asyncVerifyCallback2);
-asyncVerifyCallback  = makeVerifier     (testHeaderVal,  testViaAsyncOpen2);
-testViaAsyncOpen     = makeAsyncOpenTest(baitURI,        asyncVerifyCallback);
-
 function testViaXHR()
 {
   dump("Test 1\n");
@@ -244,7 +202,4 @@ function run_test()
   redirected = new Redirector();
 
   testViaXHR();
-  testViaAsyncOpen();  // will call done() asynchronously for cleanup
-
-  do_test_pending();
 }
