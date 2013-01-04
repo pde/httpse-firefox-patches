@@ -1,0 +1,592 @@
+diff -r ee134c770558 netwerk/protocol/http/HttpChannelChild.cpp
+--- a/netwerk/protocol/http/HttpChannelChild.cpp	Wed Dec 05 12:32:09 2012 -0800
++++ b/netwerk/protocol/http/HttpChannelChild.cpp	Wed Dec 05 22:09:57 2012 +0000
+@@ -1054,15 +1054,16 @@
+   URIParams uri;
+   SerializeURI(mURI, uri);
+ 
+-  OptionalURIParams originalURI, documentURI, referrer;
++  OptionalURIParams originalURI, documentURI, referrer, redirectURI;
+   SerializeURI(mOriginalURI, originalURI);
+   SerializeURI(mDocumentURI, documentURI);
+   SerializeURI(mReferrer, referrer);
++  SerializeURI(mInternalRedirectURI, redirectURI);
+ 
+   OptionalInputStreamParams uploadStream;
+   SerializeInputStream(mUploadStream, uploadStream);
+ 
+-  SendAsyncOpen(uri, originalURI, documentURI, referrer, mLoadFlags,
++  SendAsyncOpen(uri, originalURI, documentURI, referrer, redirectURI, mLoadFlags,
+                 mClientSetRequestHeaders, mRequestHead.Method(), uploadStream,
+                 mUploadStreamHasHeaders, mPriority, mRedirectionLimit,
+                 mAllowPipelining, mForceAllowThirdPartyCookie, mSendResumeAt,
+@@ -1105,6 +1106,18 @@
+   DROP_DEAD();
+ }
+ 
++NS_IMETHODIMP
++HttpChannelChild::RedirectTo(nsIURI *uri)
++{
++  // We can only redirect unopened channels
++  NS_ENSURE_TRUE(!mIPCOpen, NS_ERROR_ALREADY_OPENED);
++
++  // The redirect is stored internally for use in AsyncOpen
++  mInternalRedirectURI = uri;
++
++  return NS_OK;
++}
++
+ // The next four _should_ be implemented, but we need to figure out how
+ // to transfer the data from the chrome process first.
+ 
+diff -r ee134c770558 netwerk/protocol/http/HttpChannelChild.h
+--- a/netwerk/protocol/http/HttpChannelChild.h	Wed Dec 05 12:32:09 2012 -0800
++++ b/netwerk/protocol/http/HttpChannelChild.h	Wed Dec 05 22:09:57 2012 +0000
+@@ -75,6 +75,7 @@
+   NS_IMETHOD GetLocalPort(int32_t* port);
+   NS_IMETHOD GetRemoteAddress(nsACString& addr);
+   NS_IMETHOD GetRemotePort(int32_t* port);
++  NS_IMETHOD RedirectTo(nsIURI *uri);
+   // nsISupportsPriority
+   NS_IMETHOD SetPriority(int32_t value);
+   // nsIResumableChannel
+@@ -125,6 +126,7 @@
+   RequestHeaderTuples mClientSetRequestHeaders;
+   nsCOMPtr<nsIChildChannel> mRedirectChannelChild;
+   nsCOMPtr<nsISupports> mSecurityInfo;
++  nsCOMPtr<nsIURI>      mInternalRedirectURI;
+ 
+   bool mIsFromCache;
+   bool mCacheEntryAvailable;
+diff -r ee134c770558 netwerk/protocol/http/HttpChannelParent.cpp
+--- a/netwerk/protocol/http/HttpChannelParent.cpp	Wed Dec 05 12:32:09 2012 -0800
++++ b/netwerk/protocol/http/HttpChannelParent.cpp	Wed Dec 05 22:09:57 2012 +0000
+@@ -124,6 +124,7 @@
+                                  const OptionalURIParams&   aOriginalURI,
+                                  const OptionalURIParams&   aDocURI,
+                                  const OptionalURIParams&   aReferrerURI,
++                                 const OptionalURIParams&   aInternalRedirectURI,
+                                  const uint32_t&            loadFlags,
+                                  const RequestHeaderTuples& requestHeaders,
+                                  const nsHttpAtom&          requestMethod,
+@@ -144,6 +145,7 @@
+   nsCOMPtr<nsIURI> originalUri = DeserializeURI(aOriginalURI);
+   nsCOMPtr<nsIURI> docUri = DeserializeURI(aDocURI);
+   nsCOMPtr<nsIURI> referrerUri = DeserializeURI(aReferrerURI);
++  nsCOMPtr<nsIURI> internalRedirectUri = DeserializeURI(aInternalRedirectURI);
+ 
+   nsCString uriSpec;
+   uri->GetSpec(uriSpec);
+@@ -174,6 +176,8 @@
+     httpChan->SetDocumentURI(docUri);
+   if (referrerUri)
+     httpChan->SetReferrerInternal(referrerUri);
++  if (internalRedirectUri)
++    httpChan->RedirectTo(internalRedirectUri);
+   if (loadFlags != nsIRequest::LOAD_NORMAL)
+     httpChan->SetLoadFlags(loadFlags);
+ 
+diff -r ee134c770558 netwerk/protocol/http/HttpChannelParent.h
+--- a/netwerk/protocol/http/HttpChannelParent.h	Wed Dec 05 12:32:09 2012 -0800
++++ b/netwerk/protocol/http/HttpChannelParent.h	Wed Dec 05 22:09:57 2012 +0000
+@@ -52,6 +52,7 @@
+                              const OptionalURIParams&   originalUri,
+                              const OptionalURIParams&   docUri,
+                              const OptionalURIParams&   referrerUri,
++                             const OptionalURIParams&   internalRedirectUri,
+                              const uint32_t&            loadFlags,
+                              const RequestHeaderTuples& requestHeaders,
+                              const nsHttpAtom&          requestMethod,
+diff -r ee134c770558 netwerk/protocol/http/PHttpChannel.ipdl
+--- a/netwerk/protocol/http/PHttpChannel.ipdl	Wed Dec 05 12:32:09 2012 -0800
++++ b/netwerk/protocol/http/PHttpChannel.ipdl	Wed Dec 05 22:09:57 2012 +0000
+@@ -37,6 +37,7 @@
+             OptionalURIParams   original,
+             OptionalURIParams   doc,
+             OptionalURIParams   referrer,
++            OptionalURIParams   internalRedirect,
+             uint32_t            loadFlags,
+             RequestHeaderTuples requestHeaders,
+             nsHttpAtom          requestMethod,
+diff -r ee134c770558 netwerk/protocol/http/nsHttpChannel.cpp
+--- a/netwerk/protocol/http/nsHttpChannel.cpp	Wed Dec 05 12:32:09 2012 -0800
++++ b/netwerk/protocol/http/nsHttpChannel.cpp	Wed Dec 05 22:09:57 2012 +0000
+@@ -35,6 +35,7 @@
+ #include "base/compiler_specific.h"
+ #include "NullHttpTransaction.h"
+ #include "mozilla/Attributes.h"
++#include "mozilla/net/HttpBaseChannel.h"
+ 
+ namespace mozilla { namespace net {
+  
+@@ -1545,18 +1546,17 @@
+         return;
+     }
+ 
+-    nsresult rv = AsyncRedirectChannelToHttps();
++    nsresult rv = InternalRedirectChannelToHttps();
+     if (NS_FAILED(rv))
+-        ContinueAsyncRedirectChannelToHttps(rv);
++        ContinueInternalRedirectChannelToURI(rv);
+ }
+ 
+ nsresult
+-nsHttpChannel::AsyncRedirectChannelToHttps()
++nsHttpChannel::InternalRedirectChannelToHttps()
+ {
+     nsresult rv = NS_OK;
+     LOG(("nsHttpChannel::HandleAsyncRedirectChannelToHttps() [STS]\n"));
+ 
+-    nsCOMPtr<nsIChannel> newChannel;
+     nsCOMPtr<nsIURI> upgradedURI;
+ 
+     rv = mURI->Clone(getter_AddRefs(upgradedURI));
+@@ -1578,6 +1578,48 @@
+     else
+         upgradedURI->SetPort(oldPort);
+ 
++    return InternalRedirectChannelToURI(upgradedURI);
++}
++
++NS_IMETHODIMP
++nsHttpChannel::RedirectTo(nsIURI *newURI)
++{
++    // We can only redirect unopened channels
++    NS_ENSURE_TRUE(!mRequestObserversCalled, NS_ERROR_ALREADY_OPENED);
++
++    // The redirect is stored internally for use in AsyncOpen
++    mInternalRedirectURI = newURI;
++
++    return NS_OK;
++}
++
++void
++nsHttpChannel::HandleAsyncInternalRedirect()
++{
++    NS_PRECONDITION(!mCallOnResume, "How did that happen?");
++    NS_PRECONDITION(mInternalRedirectURI, "How did that happen?");
++
++    if (mSuspendCount) {
++        LOG(("Waiting until resume to do async API redirect [this=%p]\n", this));
++        mCallOnResume = &nsHttpChannel::HandleAsyncInternalRedirect;
++        return;
++    }
++
++    nsresult rv = InternalRedirectChannelToURI(mInternalRedirectURI);
++    if (NS_FAILED(rv))
++        ContinueInternalRedirectChannelToURI(rv);
++
++    return;
++}
++
++nsresult
++nsHttpChannel::InternalRedirectChannelToURI(nsIURI *upgradedURI)
++{
++    nsresult rv = NS_OK;
++    LOG(("nsHttpChannel::InternalRedirectChannelToURI()\n"));
++
++    nsCOMPtr<nsIChannel> newChannel;
++
+     nsCOMPtr<nsIIOService> ioService;
+     rv = gHttpHandler->GetIOService(getter_AddRefs(ioService));
+     NS_ENSURE_SUCCESS(rv, rv);
+@@ -1593,7 +1635,7 @@
+     uint32_t flags = nsIChannelEventSink::REDIRECT_PERMANENT;
+ 
+     PushRedirectAsyncFunc(
+-        &nsHttpChannel::ContinueAsyncRedirectChannelToHttps);
++        &nsHttpChannel::ContinueInternalRedirectChannelToURI);
+     rv = gHttpHandler->AsyncOnChannelRedirect(this, newChannel, flags);
+ 
+     if (NS_SUCCEEDED(rv))
+@@ -1601,15 +1643,18 @@
+ 
+     if (NS_FAILED(rv)) {
+         AutoRedirectVetoNotifier notifier(this);
++
++        /* Remove the async call to ContinueInternalRedirectChannelToURI().
++         * It is called directly by our callers upon return (to clean up
++         * the failed redirect). */
+         PopRedirectAsyncFunc(
+-            &nsHttpChannel::ContinueAsyncRedirectChannelToHttps);
++            &nsHttpChannel::ContinueInternalRedirectChannelToURI);
+     }
+ 
+     return rv;
+ }
+-
+ nsresult
+-nsHttpChannel::ContinueAsyncRedirectChannelToHttps(nsresult rv)
++nsHttpChannel::ContinueInternalRedirectChannelToURI(nsresult rv)
+ {
+     if (NS_SUCCEEDED(rv))
+         rv = OpenRedirectChannel(rv);
+@@ -4337,6 +4382,12 @@
+     if (mLoadGroup)
+         mLoadGroup->AddRequest(this, nullptr);
+ 
++    // Check to see if we should redirect this channel elsewhere by
++    // nsIHttpChannel.redirectTo API request
++    if (mInternalRedirectURI) {
++        return AsyncCall(&nsHttpChannel::HandleAsyncInternalRedirect);
++    }
++
+     // record asyncopen time unconditionally and clear it if we
+     // don't want it after OnModifyRequest() weighs in. But waiting for
+     // that to complete would mean we don't include proxy resolution in the
+diff -r ee134c770558 netwerk/protocol/http/nsHttpChannel.h
+--- a/netwerk/protocol/http/nsHttpChannel.h	Wed Dec 05 12:32:09 2012 -0800
++++ b/netwerk/protocol/http/nsHttpChannel.h	Wed Dec 05 22:09:57 2012 +0000
+@@ -108,6 +108,8 @@
+     // nsIChannel
+     NS_IMETHOD GetSecurityInfo(nsISupports **aSecurityInfo);
+     NS_IMETHOD AsyncOpen(nsIStreamListener *listener, nsISupports *aContext);
++    // nsIHttpChannel
++    NS_IMETHOD RedirectTo(nsIURI *newURI);
+     // nsIHttpChannelInternal
+     NS_IMETHOD SetupFallbackChannel(const char *aFallbackKey);
+     // nsISupportsPriority
+@@ -182,12 +184,14 @@
+ 
+     // redirection specific methods
+     void     HandleAsyncRedirect();
++    void     HandleAsyncInternalRedirect();
+     nsresult ContinueHandleAsyncRedirect(nsresult);
+     void     HandleAsyncNotModified();
+     void     HandleAsyncFallback();
+     nsresult ContinueHandleAsyncFallback(nsresult);
+     nsresult PromptTempRedirect();
+-    virtual nsresult SetupReplacementChannel(nsIURI *, nsIChannel *, bool preserveMethod);
++    nsresult InternalRedirectChannelToURI(nsIURI *);
++    virtual  nsresult SetupReplacementChannel(nsIURI *, nsIChannel *, bool preserveMethod);
+ 
+     // proxy specific methods
+     nsresult ProxyFailover();
+@@ -242,8 +246,8 @@
+     nsresult DoAuthRetry(nsAHttpConnection *);
+ 
+     void     HandleAsyncRedirectChannelToHttps();
+-    nsresult AsyncRedirectChannelToHttps();
+-    nsresult ContinueAsyncRedirectChannelToHttps(nsresult rv);
++    nsresult InternalRedirectChannelToHttps();
++    nsresult ContinueInternalRedirectChannelToURI(nsresult rv);
+     nsresult OpenRedirectChannel(nsresult rv);
+ 
+     /**
+@@ -323,6 +327,7 @@
+     friend class HttpCacheQuery;
+ 
+     nsCOMPtr<nsIURI>                  mRedirectURI;
++    nsCOMPtr<nsIURI>                  mInternalRedirectURI;
+     nsCOMPtr<nsIChannel>              mRedirectChannel;
+     uint32_t                          mRedirectType;
+ 
+diff -r ee134c770558 netwerk/protocol/http/nsIHttpChannel.idl
+--- a/netwerk/protocol/http/nsIHttpChannel.idl	Wed Dec 05 12:32:09 2012 -0800
++++ b/netwerk/protocol/http/nsIHttpChannel.idl	Wed Dec 05 22:09:57 2012 +0000
+@@ -257,4 +257,16 @@
+      *         has been received (before onStartRequest).
+      */
+     boolean isNoCacheResponse();
++
++    /**
++     * Instructs the channel to immediately redirect to a new destination.
++     * Can only be called on channels not yet opened.
++     *
++     * This method provides no explicit conflict resolution. The last
++     * caller to call it wins.
++     *
++     * @throws NS_ERROR_ALREADY_OPENED if called after the channel
++     *         has been opened.
++     */
++    void redirectTo(in nsIURI aNewURI);
+ };
+diff -r ee134c770558 netwerk/protocol/viewsource/nsViewSourceChannel.cpp
+--- a/netwerk/protocol/viewsource/nsViewSourceChannel.cpp	Wed Dec 05 12:32:09 2012 -0800
++++ b/netwerk/protocol/viewsource/nsViewSourceChannel.cpp	Wed Dec 05 22:09:57 2012 +0000
+@@ -680,4 +680,12 @@
+ {
+     return !mHttpChannel ? NS_ERROR_NULL_POINTER :
+         mHttpChannel->IsNoCacheResponse(_retval);
+-} 
++}
++
++NS_IMETHODIMP
++nsViewSourceChannel::RedirectTo(nsIURI *uri)
++{
++    return !mHttpChannel ? NS_ERROR_NULL_POINTER :
++        mHttpChannel->RedirectTo(uri);
++}
++
+diff -r ee134c770558 netwerk/test/unit/test_redirect_from_script.js
+--- /dev/null	Thu Jan 01 00:00:00 1970 +0000
++++ b/netwerk/test/unit/test_redirect_from_script.js	Wed Dec 05 22:09:57 2012 +0000
+@@ -0,0 +1,246 @@
++/*
++ * Test whether the rewrite-requests-from-script API implemented here:
++ * https://bugzilla.mozilla.org/show_bug.cgi?id=765934 is functioning
++ * correctly
++ *
++ * The test has the following components:
++ *
++ * testViaXHR() checks that internal redirects occur correctly for requests
++ * made with nsIXMLHttpRequest objects.
++ *
++ * testViaAsyncOpen() checks that internal redirects occur correctly when made
++ * with nsIHTTPChannel.asyncOpen().
++ *
++ * Both of the above functions tests four requests, a simple case that
++ * redirects within a server; a second that redirects to a second webserver;
++ * and a third where internal script redirects in response to a server-side
++ * 302 redirect, and a fourth where one internal script redirects in response
++ * to another's redirect.  The successful redirects are confirmed by the
++ * presence of a custom response header.
++ * 
++ */
++
++const Cc = Components.classes;
++const Ci = Components.interfaces;
++const Cu = Components.utils;
++const Cr = Components.results;
++
++Cu.import("resource://testing-common/httpd.js");
++
++// redirectOpportunity /should/ be http-on-modify-request, but that seems to
++// be broken ATM
++// redirectOpportunity = "http-on-modify-request";
++// this alternative works for 3 of the 4 test scenarios, but not Test Part 4
++redirectOpportunity = "http-on-opening-request";
++
++var httpServer = null, httpServer2 = null;
++
++// Test Part 1: a cross-path redirect on a single HTTP server
++// http://localhost:4444/bait -> http://localhost:4444/switch
++var baitPath = "/bait";
++var baitURI = "http://localhost:4444" + baitPath;
++var baitText = "you got the worm";
++
++var redirectedPath = "/switch";
++var redirectedURI = "http://localhost:4444" + redirectedPath;
++var redirectedText = "worms are not tasty";
++
++// Test Part 2: Now, a redirect to a different server
++// http://localhost:4444/bait2 -> http://localhost:4445/switch
++var bait2Path = "/bait2";
++var bait2URI = "http://localhost:4444" + bait2Path;
++var redirected2URI = "http://localhost:4445" + redirectedPath;
++
++// Test Part 3, begin with a serverside redirect that itself turns into an instance
++// of Test Part 1
++var bait3Path = "/frog";
++var bait3URI = "http://localhost:4444" + bait3Path;
++
++// Test Part 4, begin with this client-side redirect and which then redirects
++// to an instance of Test Part 1
++var bait4Path = "/prince";
++var bait4URI = "http://localhost:4444" + bait4Path;
++
++var testHeaderName = "X-Redirected-By-Script"
++var testHeaderVal = "Yes indeed";
++var testHeaderVal2 = "Very Yes";
++
++
++function make_channel(url, callback, ctx) {
++  var ios = Cc["@mozilla.org/network/io-service;1"].
++            getService(Ci.nsIIOService);
++  return ios.newChannel(url, "", null);
++}
++
++function baitHandler(metadata, response)
++{
++  // Content-Type required: https://bugzilla.mozilla.org/show_bug.cgi?id=748117
++  response.setHeader("Content-Type", "text/html", false);
++  response.bodyOutputStream.write(baitText, baitText.length);
++}
++
++function redirectedHandler(metadata, response)
++{
++  response.setHeader("Content-Type", "text/html", false);
++  response.bodyOutputStream.write(redirectedText, redirectedText.length);
++  response.setHeader(testHeaderName, testHeaderVal);
++}
++
++function redirected2Handler(metadata, response)
++{
++  response.setHeader("Content-Type", "text/html", false);
++  response.bodyOutputStream.write(redirectedText, redirectedText.length);
++  response.setHeader(testHeaderName, testHeaderVal2);
++}
++
++function bait3Handler(metadata, response)
++{
++  response.setHeader("Content-Type", "text/html", false);  
++  response.setStatusLine(metadata.httpVersion, 302, "Found");
++  response.setHeader("Location", redirectedURI);
++}
++
++
++Redirector.prototype = {
++  // This class observes the an event and uses that to
++  // trigger a redirectTo(uri) redirect using the new API
++  // before https://bugzilla.mozilla.org/show_bug.cgi?id=800799
++  // the event was http-on-opening-request; now it's http-on-opening-request
++  register: function()
++  {
++    Cc["@mozilla.org/observer-service;1"].
++      getService(Ci.nsIObserverService).
++      addObserver(this, redirectOpportunity, true);
++  },
++
++  QueryInterface: function(iid)
++  {
++    if (iid.equals(Ci.nsIObserver) ||
++        iid.equals(Ci.nsISupportsWeakReference) ||
++        iid.equals(Ci.nsISupports))
++      return this;
++    throw Components.results.NS_NOINTERFACE;
++  },
++
++  observe: function(subject, topic, data)
++  {
++    if (topic == redirectOpportunity) {
++      if (!(subject instanceof Ci.nsIHttpChannel))
++        do_throw("http-on-opening-request observed a non-HTTP channel");
++      var channel = subject.QueryInterface(Ci.nsIHttpChannel);
++      var ioservice = Cc["@mozilla.org/network/io-service;1"].
++                        getService(Ci.nsIIOService);
++      var target = null;
++      if (channel.URI.spec == baitURI)  target = redirectedURI;
++      if (channel.URI.spec == bait2URI) target = redirected2URI;
++      if (channel.URI.spec == bait4URI) target = baitURI;
++      // if we have a target, redirect there
++      if (target) {
++        var tURI = ioservice.newURI(target, null, null);
++        try       { channel.redirectTo(tURI); }
++        catch (e) { do_throw("Exception in redirectTo " + e + "\n"); }
++      }
++    }
++  }
++}
++
++finished=false;
++
++function Redirector()
++{
++  this.register();
++}
++
++function makeAsyncOpenTest(uri, verifier)
++{
++  // Produce a function to run an asyncOpen test
++  var test = function()
++  {
++    var chan = make_channel(uri);
++    chan.asyncOpen(new ChannelListener(verifier), null);
++  };
++  return test;
++}
++
++function makeVerifier(headerValue, nextTask)
++{
++  // Produce a callback function which checks for the presence of headerValue,
++  // and then continues to the next async test task
++  var verifier = function(req, buffer)
++  {
++    if (!(req instanceof Ci.nsIHttpChannel))
++      do_throw(req + " is not an nsIHttpChannel, catastrophe imminent!");
++
++    var httpChannel = req.QueryInterface(Ci.nsIHttpChannel);
++    do_check_eq(httpChannel.getResponseHeader(testHeaderName), headerValue);
++    do_check_eq(buffer, redirectedText);
++    nextTask();
++  };
++  return verifier;
++}
++
++// The tests and verifier callbacks depend on each other, and therefore need
++// to be defined in the reverse of the order they are called in.  It is
++// therefore best to read this stanza backwards!
++// Skip test 4
++//asyncVerifyCallback4 = makeVerifier     (testHeaderVal,  done);
++//testViaAsyncOpen4    = makeAsyncOpenTest(bait4URI,       asyncVerifyCallback4);
++//asyncVerifyCallback3 = makeVerifier     (testHeaderVal,  testViaAsyncOpen4);
++asyncVerifyCallback3 = makeVerifier     (testHeaderVal,  done); // skip test 4
++testViaAsyncOpen3    = makeAsyncOpenTest(bait3URI,       asyncVerifyCallback3);
++asyncVerifyCallback2 = makeVerifier     (testHeaderVal2, testViaAsyncOpen3);
++testViaAsyncOpen2    = makeAsyncOpenTest(bait2URI,       asyncVerifyCallback2);
++asyncVerifyCallback  = makeVerifier     (testHeaderVal,  testViaAsyncOpen2);
++testViaAsyncOpen     = makeAsyncOpenTest(baitURI,        asyncVerifyCallback);
++
++function testViaXHR()
++{
++  dump("Test 1");
++  runXHRTest(baitURI,  testHeaderVal);
++  dump("Test 2");
++  runXHRTest(bait2URI, testHeaderVal2);
++  dump("Test 3");
++  runXHRTest(bait3URI, testHeaderVal);
++  dump("Test 4");
++  //runXHRTest(bait4URI, testHeaderVal);
++}
++
++function runXHRTest(uri, headerValue)
++{
++  // Check that making an XHR request for uri winds up redirecting to a result with the
++  // appropriate headerValue
++  var xhr = Cc["@mozilla.org/xmlextras/xmlhttprequest;1"];
++
++  var req = xhr.createInstance(Ci.nsIXMLHttpRequest);
++  req.open("GET", uri, false);
++  req.send();
++  do_check_eq(req.getResponseHeader(testHeaderName), headerValue);
++  do_check_eq(req.response, redirectedText);
++}
++
++function done()
++{
++  dump("done()");
++  httpServer.stop(function () {httpServer2.stop(do_test_finished);});
++}
++
++function run_test()
++{
++  httpServer = new HttpServer();
++  httpServer.registerPathHandler(baitPath, baitHandler);
++  httpServer.registerPathHandler(bait2Path, baitHandler);
++  httpServer.registerPathHandler(bait3Path, bait3Handler);
++  httpServer.registerPathHandler(bait4Path, baitHandler);
++  httpServer.registerPathHandler(redirectedPath, redirectedHandler);
++  httpServer.start(4444);
++  httpServer2 = new HttpServer();
++  httpServer2.registerPathHandler(redirectedPath, redirected2Handler);
++  httpServer2.start(4445);
++
++  redirected = new Redirector();
++
++  testViaXHR();
++  testViaAsyncOpen();  // will call done() asynchronously for cleanup
++
++  do_test_pending();
++}
+diff -r ee134c770558 netwerk/test/unit/xpcshell.ini
+--- a/netwerk/test/unit/xpcshell.ini	Wed Dec 05 12:32:09 2012 -0800
++++ b/netwerk/test/unit/xpcshell.ini	Wed Dec 05 22:09:57 2012 +0000
+@@ -174,6 +174,7 @@
+ [test_redirect-caching_passing.js]
+ [test_redirect_canceled.js]
+ [test_redirect_failure.js]
++[test_redirect_from_script.js]
+ [test_redirect_passing.js]
+ [test_redirect_loop.js]
+ [test_redirect_baduri.js]
+diff -r ee134c770558 netwerk/test/unit_ipc/xpcshell.ini
+--- a/netwerk/test/unit_ipc/xpcshell.ini	Wed Dec 05 12:32:09 2012 -0800
++++ b/netwerk/test/unit_ipc/xpcshell.ini	Wed Dec 05 22:09:57 2012 +0000
+@@ -19,6 +19,7 @@
+ [test_redirect-caching_passing_wrap.js]
+ [test_redirect_canceled_wrap.js]
+ [test_redirect_failure_wrap.js]
++[test_redirect_from_script_wrap.js]
+ [test_redirect_passing_wrap.js]
+ [test_reentrancy_wrap.js]
+ [test_resumable_channel_wrap.js]
