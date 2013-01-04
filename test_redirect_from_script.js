@@ -199,11 +199,11 @@ testViaAsyncOpen     = makeAsyncOpenTest(baitURI,        asyncVerifyCallback);
 
 function testViaXHR()
 {
-  dump("Test 1");
+  dump("Test 1\n");
   runXHRTest(baitURI,  testHeaderVal);
-  dump("Test 2");
+  dump("Test 2\n");
   runXHRTest(bait2URI, testHeaderVal2);
-  dump("Test 3");
+  dump("Test 3\n");
   runXHRTest(bait3URI, testHeaderVal);
   //dump("Test 4");
   //runXHRTest(bait4URI, testHeaderVal);
