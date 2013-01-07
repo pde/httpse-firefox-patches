@@ -11,12 +11,19 @@
  * testViaAsyncOpen() checks that internal redirects occur correctly when made
  * with nsIHTTPChannel.asyncOpen().
  *
- * Both of the above functions tests four requests, a simple case that
- * redirects within a server; a second that redirects to a second webserver;
- * and a third where internal script redirects in response to a server-side
- * 302 redirect, and a fourth where one internal script redirects in response
- * to another's redirect.  The successful redirects are confirmed by the
- * presence of a custom response header.
+ * Both of the above functions tests four requests: 
+ *
+ * Test 1: a simple case that redirects within a server; 
+ * Test 2: a second that redirects to a second webserver;
+ * Test 3: internal script redirects in response to a server-side 302 redirect; 
+ * Test 4: one internal script redirects in response to another's redirect.  
+ *
+ * The successful redirects are confirmed by the presence of a custom response header.
+ *
+ * testViaAsyncOpen also runs two more tests: 
+ *
+ * Test 5: test 3 but with asyncOnChannelRedirect;
+ * Test 6: test 4 but with asyncOnChannelRedirect;
  *
  */
 
@@ -68,16 +75,14 @@ var testHeaderName = "X-Redirected-By-Script"
 var testHeaderVal = "Yes indeed";
 var testHeaderVal2 = "Very Yes";
 
-// not great, but we believe asyncOnChannelRedirect will be required to pass
-// test 4 sice FF 18+ because http-on-opening-request doesn't fire for
-// internal redirects
-useAsyncOnChannelRedirect = true;
+// False for Tests 1-4, true for 5-6
+useAsyncOnChannelRedirect = false;
 
 function make_channel(url, callback, ctx) {
   var ios = Cc["@mozilla.org/network/io-service;1"].
             getService(Ci.nsIIOService);
   var chan = ios.newChannel(url, "", null);
-  chan.notificationCallbacks = redirectorInstance;
+  chan.notificationCallbacks = eventSinkInstance;
   return chan;
 }
 
@@ -125,17 +130,64 @@ Redirector.prototype = {
       redirectOpportunity = "http-on-modify-request";
       obsService.addObserver(this, redirectOpportunity, true);
     }
+  },
 
-    if (useAsyncOnChannelRedirect) {
+
+  observe: function(subject, topic, data)
+  {
+    if (topic == redirectOpportunity) {
+      if (!(subject instanceof Ci.nsIHttpChannel))
+        do_throw(redirectOpportunity + " observed a non-HTTP channel");
+      var channel = subject.QueryInterface(Ci.nsIHttpChannel);
+      this.doRedirect(channel);
+    }
+  },
+
+  doRedirect: function(channel)
+  {
+    var ioservice = Cc["@mozilla.org/network/io-service;1"].
+                      getService(Ci.nsIIOService);
+    var target = null;
+    var url = channel.URI.spec;
+    if (url == baitURI)  target = redirectedURI;   // Test 1, 3part2 & 4part2
+    if (url == bait2URI) target = redirected2URI;  // Test 2
+    if (url == bait4URI) target = baitURI;         // Test 4part1
+    // if we have a target, redirect there
+    if (target) {
+      var tURI = ioservice.newURI(target, null, null);
+      try       { channel.redirectTo(tURI); }
+      catch (e) { do_throw("Exception in redirectTo " + e + "\n"); }
+    }
+  }
+
+}
+
+function Redirector()
+{
+  this.register();
+}
+
+EventSink.prototype = {
+  register: function() {
       // nsIChannelEventSink registration
-
       const sinkCID = Components.ID("{14aa4b81-e266-45cb-88f8-89595dece114}");
       const sinkContract = "@mozilla.org/network/unittest/channeleventsink;1";
       var catMan = Cc["@mozilla.org/categorymanager;1"].
                    getService(Ci.nsICategoryManager);
       catMan.addCategoryEntry("net-channel-event-sinks", "unit test",
                               sinkContract, false, true);       
-    }
+
+      // Now tell our channel constructor to give us hooks
+      useAsyncOnChannelRedirect = true;
+  },
+
+  asyncOnChannelRedirect: function(oldChannel, newChannel, flags, callback)
+  {
+    dump("in on channel redirect!!!!!!!!!!!!!!!!!!!");
+    if (!(newChannel instanceof CI.nsIHttpChannel))
+      do_throw("Redirecting to something that isn't an nsIHttpChannel!");
+    redirectorInstance.doRedirect(newChannel);
+    callback.onRedirectVerifyCallback(Cr.NS_OK);
   },
 
   QueryInterface: function(iid)
@@ -159,50 +211,16 @@ Redirector.prototype = {
     if (iid.equals(Components.interfaces.nsIChannelEventSink))
       return this;
     throw Components.results.NS_ERROR_NO_INTERFACE;
-  },
-
-  observe: function(subject, topic, data)
-  {
-    if (topic == redirectOpportunity) {
-      if (!(subject instanceof Ci.nsIHttpChannel))
-        do_throw(redirectOpportunity + " observed a non-HTTP channel");
-      var channel = subject.QueryInterface(Ci.nsIHttpChannel);
-      this.doRedirect(channel);
-    }
-  },
-
-  doRedirect: function(channel)
-  {
-    var ioservice = Cc["@mozilla.org/network/io-service;1"].
-                      getService(Ci.nsIIOService);
-    var target = null;
-    if (channel.URI.spec == baitURI)  target = redirectedURI;
-    if (channel.URI.spec == bait2URI) target = redirected2URI;
-    if (channel.URI.spec == bait4URI) target = baitURI;
-      // if we have a target, redirect there
-    if (target) {
-      var tURI = ioservice.newURI(target, null, null);
-      try       { channel.redirectTo(tURI); }
-      catch (e) { do_throw("Exception in redirectTo " + e + "\n"); }
-    }
-  },
-
-  asyncOnChannelRedirect: function(oldChannel, newChannel, flags, callback) 
-  {
-    dump("in on channel redirect!!!!!!!!!!!!!!!!!!!");
-    if (!(newChannel instanceof CI.nsIHttpChannel))
-      do_throw("Redirecting to something that isn't an nsIHttpChannel!");
-    doRedirect(newChannel);
-    callback.onRedirectVerifyCallback(Cr.NS_OK);
   }
+}
+
+function EventSink()
+{
+  this.register();
 }
 
 finished=false;
 
-function Redirector()
-{
-  this.register();
-}
 
 function makeAsyncOpenTest(uri, verifier)
 {
@@ -233,11 +251,20 @@ function makeVerifier(headerValue, nextTask)
   return verifier;
 }
 
-
 // The tests and verifier callbacks depend on each other, and therefore need
 // to be defined in the reverse of the order they are called in.  It is
 // therefore best to read this stanza backwards!
-asyncVerifyCallback4 = makeVerifier     (testHeaderVal,  done);
+
+asyncVerifyCallback6 = makeVerifier     (testHeaderVal,  done);
+testViaAsyncOpen6    = makeAsyncOpenTest(bait4URI,       asyncVerifyCallback6);
+asyncVerifyCallback5 = makeVerifier     (testHeaderVal,  testViaAsyncOpen6);
+testViaAsyncOpen5    = makeAsyncOpenTest(bait3URI,       asyncVerifyCallback5);
+function testWithEventSink() {
+  // Turn on the nsIEventSink implementation and then run tests 5 & 6. 
+  eventSinkInstance = new EventSink();
+  testViaAsyncOpen5();
+}
+asyncVerifyCallback4 = makeVerifier     (testHeaderVal,  testWithEventSink);
 testViaAsyncOpen4    = makeAsyncOpenTest(bait4URI,       asyncVerifyCallback4);
 asyncVerifyCallback3 = makeVerifier     (testHeaderVal,  testViaAsyncOpen4);
 testViaAsyncOpen3    = makeAsyncOpenTest(bait3URI,       asyncVerifyCallback3);
@@ -297,4 +324,5 @@ function run_test()
   testViaAsyncOpen();  // will call done() asynchronously for cleanup
 
   do_test_pending();
+
 }
