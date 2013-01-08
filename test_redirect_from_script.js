@@ -82,7 +82,8 @@ function make_channel(url, callback, ctx) {
   var ios = Cc["@mozilla.org/network/io-service;1"].
             getService(Ci.nsIIOService);
   var chan = ios.newChannel(url, "", null);
-  chan.notificationCallbacks = eventSinkInstance;
+  if (useAsyncOnChannelRedirect)
+    chan.notificationCallbacks = eventSinkInstance;
   return chan;
 }
 
@@ -120,18 +121,19 @@ Redirector.prototype = {
   register: function()
   {
     // nsIObserver registration
-    var obsService = Cc["@mozilla.org/observer-service;1"].
-                     getService(Ci.nsIObserverService);
-    try {
-      // Firefox ~18+
-      obsService.addObserver(this, redirectOpportunity, true);
-    } catch(e) {
-      // Older platforms
-      redirectOpportunity = "http-on-modify-request";
-      obsService.addObserver(this, redirectOpportunity, true);
-    }
+    Cc["@mozilla.org/observer-service;1"].
+      getService(Ci.nsIObserverService).
+      addObserver(this, redirectOpportunity, true);
   },
 
+  QueryInterface: function(iid)
+  {
+    if (iid.equals(Ci.nsIObserver) ||
+        iid.equals(Ci.nsISupportsWeakReference) ||
+        iid.equals(Ci.nsISupports))
+      return this;
+    throw Components.results.NS_NOINTERFACE;
+  },
 
   observe: function(subject, topic, data)
   {
@@ -139,6 +141,7 @@ Redirector.prototype = {
       if (!(subject instanceof Ci.nsIHttpChannel))
         do_throw(redirectOpportunity + " observed a non-HTTP channel");
       var channel = subject.QueryInterface(Ci.nsIHttpChannel);
+      dump("xxxxxxxxxxxxxxxx " + channel.URI.spec + " in " + redirectOpportunity + " observer\n");
       this.doRedirect(channel);
     }
   },
@@ -159,7 +162,6 @@ Redirector.prototype = {
       catch (e) { do_throw("Exception in redirectTo " + e + "\n"); }
     }
   }
-
 }
 
 function Redirector()
@@ -183,7 +185,7 @@ EventSink.prototype = {
 
   asyncOnChannelRedirect: function(oldChannel, newChannel, flags, callback)
   {
-    dump("in on channel redirect!!!!!!!!!!!!!!!!!!!");
+    dump(oldChannel.URI.spec + " in on channel redirect!!!!!!!!");
     if (!(newChannel instanceof CI.nsIHttpChannel))
       do_throw("Redirecting to something that isn't an nsIHttpChannel!");
     redirectorInstance.doRedirect(newChannel);
@@ -192,8 +194,7 @@ EventSink.prototype = {
 
   QueryInterface: function(iid)
   {
-    if (iid.equals(Ci.nsIObserver) ||
-        iid.equals(Ci.nsISupportsWeakReference) ||
+    if (iid.equals(Ci.nsISupportsWeakReference) ||
         iid.equals(Ci.nsISupports) ||
         iid.equals(Ci.nsIFactory) ||
         iid.equals(Ci.nsIChannelEventSink))
@@ -246,6 +247,7 @@ function makeVerifier(headerValue, nextTask)
     var httpChannel = req.QueryInterface(Ci.nsIHttpChannel);
     do_check_eq(httpChannel.getResponseHeader(testHeaderName), headerValue);
     do_check_eq(buffer, redirectedText);
+    dump("yyyyyyyyyyy test passed\n");
     nextTask();
   };
   return verifier;
