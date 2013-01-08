@@ -112,7 +112,7 @@ function bait3Handler(metadata, response)
 {
   response.setHeader("Content-Type", "text/html", false);  
   response.setStatusLine(metadata.httpVersion, 302, "Found");
-  response.setHeader("Location", redirectedURI);
+  response.setHeader("Location", baitURI);
 }
 
 Redirector.prototype = {
@@ -152,11 +152,13 @@ Redirector.prototype = {
                       getService(Ci.nsIIOService);
     var target = null;
     var url = channel.URI.spec;
+    dump("inside doRedirect " + url + "\n");
     if (url == baitURI)  target = redirectedURI;   // Test 1, 3part2 & 4part2
     if (url == bait2URI) target = redirected2URI;  // Test 2
     if (url == bait4URI) target = baitURI;         // Test 4part1
     // if we have a target, redirect there
     if (target) {
+      dump("  (redirecting to " + target + ")\n");
       var tURI = ioservice.newURI(target, null, null);
       try       { channel.redirectTo(tURI); }
       catch (e) { do_throw("Exception in redirectTo " + e + "\n"); }
@@ -185,7 +187,7 @@ EventSink.prototype = {
 
   asyncOnChannelRedirect: function(oldChannel, newChannel, flags, callback)
   {
-    dump(oldChannel.URI.spec + " in on channel redirect!!!!!!!!");
+    dump("!!!!!! "  + oldChannel.URI.spec + " -> " + newChannel.URI.spec + " in on channel redirect!");
     if (!(newChannel instanceof CI.nsIHttpChannel))
       do_throw("Redirecting to something that isn't an nsIHttpChannel!");
     redirectorInstance.doRedirect(newChannel);
@@ -223,12 +225,13 @@ function EventSink()
 finished=false;
 
 
-function makeAsyncOpenTest(uri, verifier)
+function makeAsyncOpenTest(testNumber, uri, verifier)
 {
   // Produce a function to run an asyncOpen test.  It opens a request for
   // uri, and then arranges for verifier to be called to check the results
   var test = function()
   {
+    dump("BEGINNING TEST " + testNumber + "\n");
     var chan = make_channel(uri);
     chan.asyncOpen(new ChannelListener(verifier), null);
   };
@@ -258,22 +261,22 @@ function makeVerifier(headerValue, nextTask)
 // therefore best to read this stanza backwards!
 
 asyncVerifyCallback6 = makeVerifier     (testHeaderVal,  done);
-testViaAsyncOpen6    = makeAsyncOpenTest(bait4URI,       asyncVerifyCallback6);
+testViaAsyncOpen6    = makeAsyncOpenTest(6, bait4URI,    asyncVerifyCallback6);
 asyncVerifyCallback5 = makeVerifier     (testHeaderVal,  testViaAsyncOpen6);
-testViaAsyncOpen5    = makeAsyncOpenTest(bait3URI,       asyncVerifyCallback5);
+testViaAsyncOpen5    = makeAsyncOpenTest(5, bait3URI,    asyncVerifyCallback5);
 function testWithEventSink() {
   // Turn on the nsIEventSink implementation and then run tests 5 & 6. 
   eventSinkInstance = new EventSink();
   testViaAsyncOpen5();
 }
 asyncVerifyCallback4 = makeVerifier     (testHeaderVal,  testWithEventSink);
-testViaAsyncOpen4    = makeAsyncOpenTest(bait4URI,       asyncVerifyCallback4);
+testViaAsyncOpen4    = makeAsyncOpenTest(4, bait4URI,    asyncVerifyCallback4);
 asyncVerifyCallback3 = makeVerifier     (testHeaderVal,  testViaAsyncOpen4);
-testViaAsyncOpen3    = makeAsyncOpenTest(bait3URI,       asyncVerifyCallback3);
+testViaAsyncOpen3    = makeAsyncOpenTest(3, bait3URI,    asyncVerifyCallback3);
 asyncVerifyCallback2 = makeVerifier     (testHeaderVal2, testViaAsyncOpen3);
-testViaAsyncOpen2    = makeAsyncOpenTest(bait2URI,       asyncVerifyCallback2);
+testViaAsyncOpen2    = makeAsyncOpenTest(2, bait2URI,    asyncVerifyCallback2);
 asyncVerifyCallback  = makeVerifier     (testHeaderVal,  testViaAsyncOpen2);
-testViaAsyncOpen     = makeAsyncOpenTest(baitURI,        asyncVerifyCallback);
+testViaAsyncOpen     = makeAsyncOpenTest(1, baitURI,     asyncVerifyCallback);
 
 function testViaXHR()
 {
