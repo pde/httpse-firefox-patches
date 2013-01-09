@@ -11,12 +11,15 @@
  * testViaAsyncOpen() checks that internal redirects occur correctly when made
  * with nsIHTTPChannel.asyncOpen().
  *
- * Both of the above functions tests four requests, a simple case that
- * redirects within a server; a second that redirects to a second webserver;
- * and a third where internal script redirects in response to a server-side
- * 302 redirect, and a fourth where one internal script redirects in response
- * to another's redirect.  The successful redirects are confirmed by the
- * presence of a custom response header.
+ * Both of the above functions tests four requests:
+ *
+ * Test 1: a simple case that redirects within a server;
+ * Test 2: a second that redirects to a second webserver;
+ * Test 3: internal script redirects in response to a server-side 302 redirect; 
+ * Test 4: one internal script redirects in response to another's redirect.
+ *
+ * The successful redirects are confirmed by the presence of a custom response
+ * header.
  *
  */
 
