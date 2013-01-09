@@ -187,13 +187,9 @@ testViaAsyncOpen     = makeAsyncOpenTest(baitURI,        asyncVerifyCallback);
 
 function testViaXHR()
 {
-  dump("Test 1\n");
   runXHRTest(baitURI,  testHeaderVal);
-  dump("Test 2\n");
   runXHRTest(bait2URI, testHeaderVal2);
-  dump("Test 3\n");
   runXHRTest(bait3URI, testHeaderVal);
-  dump("Test 4\n");
   runXHRTest(bait4URI, testHeaderVal);
 }
 
@@ -212,7 +208,6 @@ function runXHRTest(uri, headerValue)
 
 function done()
 {
-  dump("done()");
   httpServer.stop(function () {httpServer2.stop(do_test_finished);});
 }
 
