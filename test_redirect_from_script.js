@@ -91,7 +91,7 @@ function redirected2Handler(metadata, response)
 
 function bait3Handler(metadata, response)
 {
-  response.setHeader("Content-Type", "text/html", false);  
+  response.setHeader("Content-Type", "text/html", false);
   response.setStatusLine(metadata.httpVersion, 302, "Found");
   response.setHeader("Location", baitURI);
 }
