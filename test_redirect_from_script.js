@@ -15,7 +15,7 @@
  *
  * Test 1: a simple case that redirects within a server;
  * Test 2: a second that redirects to a second webserver;
- * Test 3: internal script redirects in response to a server-side 302 redirect; 
+ * Test 3: internal script redirects in response to a server-side 302 redirect;
  * Test 4: one internal script redirects in response to another's redirect.
  *
  * The successful redirects are confirmed by the presence of a custom response
@@ -30,7 +30,9 @@ const Cr = Components.results;
 
 Cu.import("resource://testing-common/httpd.js");
 
-redirectOpportunity = "http-on-modify-request";
+// the topic we observe to use the API.  http-on-opening-request might also
+// work for some purposes.
+redirectHook = "http-on-modify-request";
 
 var httpServer = null, httpServer2 = null;
 
@@ -52,18 +54,17 @@ var redirected2URI = "http://localhost:4445" + redirectedPath;
 
 // Test Part 3, begin with a serverside redirect that itself turns into an instance
 // of Test Part 1
-var bait3Path = "/frog";
+var bait3Path = "/bait3";
 var bait3URI = "http://localhost:4444" + bait3Path;
 
 // Test Part 4, begin with this client-side redirect and which then redirects
 // to an instance of Test Part 1
-var bait4Path = "/prince";
+var bait4Path = "/bait4";
 var bait4URI = "http://localhost:4444" + bait4Path;
 
 var testHeaderName = "X-Redirected-By-Script"
-var testHeaderVal = "Yes indeed";
-var testHeaderVal2 = "Very Yes";
-
+var testHeaderVal = "Success";
+var testHeaderVal2 = "Success on server 2";
 
 function make_channel(url, callback, ctx) {
   var ios = Cc["@mozilla.org/network/io-service;1"].
@@ -99,6 +100,10 @@ function bait3Handler(metadata, response)
   response.setHeader("Location", baitURI);
 }
 
+function Redirector()
+{
+  this.register();
+}
 
 Redirector.prototype = {
   // This class observes an event and uses that to
@@ -107,7 +112,7 @@ Redirector.prototype = {
   {
     Cc["@mozilla.org/observer-service;1"].
       getService(Ci.nsIObserverService).
-      addObserver(this, redirectOpportunity, true);
+      addObserver(this, redirectHook, true);
   },
 
   QueryInterface: function(iid)
@@ -121,9 +126,9 @@ Redirector.prototype = {
 
   observe: function(subject, topic, data)
   {
-    if (topic == redirectOpportunity) {
+    if (topic == redirectHook) {
       if (!(subject instanceof Ci.nsIHttpChannel))
-        do_throw(redirectOpportunity + " observed a non-HTTP channel");
+        do_throw(redirectHook + " observed a non-HTTP channel");
       var channel = subject.QueryInterface(Ci.nsIHttpChannel);
       var ioservice = Cc["@mozilla.org/network/io-service;1"].
                         getService(Ci.nsIIOService);
@@ -134,33 +139,20 @@ Redirector.prototype = {
       // if we have a target, redirect there
       if (target) {
         var tURI = ioservice.newURI(target, null, null);
-        try       { channel.redirectTo(tURI); }
-        catch (e) { do_throw("Exception in redirectTo " + e + "\n"); }
+        try {
+          channel.redirectTo(tURI);
+        } catch (e) {
+          do_throw("Exception in redirectTo " + e + "\n");
+        }
       }
     }
   }
 }
 
-finished=false;
-
-function Redirector()
+function makeAsyncTest(uri, headerValue, nextTask)
 {
-  this.register();
-}
+  // Make a test to check a redirect that is created with channel.asyncOpen()
 
-function makeAsyncOpenTest(uri, verifier)
-{
-  // Produce a function to run an asyncOpen test
-  var test = function()
-  {
-    var chan = make_channel(uri);
-    chan.asyncOpen(new ChannelListener(verifier), null);
-  };
-  return test;
-}
-
-function makeVerifier(headerValue, nextTask)
-{
   // Produce a callback function which checks for the presence of headerValue,
   // and then continues to the next async test task
   var verifier = function(req, buffer)
@@ -173,20 +165,25 @@ function makeVerifier(headerValue, nextTask)
     do_check_eq(buffer, redirectedText);
     nextTask();
   };
-  return verifier;
+
+  // Produce a function to run an asyncOpen test using the above verifier
+  var test = function()
+  {
+    var chan = make_channel(uri);
+    chan.asyncOpen(new ChannelListener(verifier), null);
+  };
+  return test;
 }
 
-// The tests and verifier callbacks depend on each other, and therefore need
-// to be defined in the reverse of the order they are called in.  It is
-// therefore best to read this stanza backwards!
-asyncVerifyCallback4 = makeVerifier     (testHeaderVal,  done);
-testViaAsyncOpen4    = makeAsyncOpenTest(bait4URI,       asyncVerifyCallback4);
-asyncVerifyCallback3 = makeVerifier     (testHeaderVal,  testViaAsyncOpen4);
-testViaAsyncOpen3    = makeAsyncOpenTest(bait3URI,       asyncVerifyCallback3);
-asyncVerifyCallback2 = makeVerifier     (testHeaderVal2, testViaAsyncOpen3);
-testViaAsyncOpen2    = makeAsyncOpenTest(bait2URI,       asyncVerifyCallback2);
-asyncVerifyCallback  = makeVerifier     (testHeaderVal,  testViaAsyncOpen2);
-testViaAsyncOpen     = makeAsyncOpenTest(baitURI,        asyncVerifyCallback);
+
+// The tests depend on each other, and therefore need to be defined in the
+// reverse of the order they are called in.  It is therefore best to read this
+// stanza backwards!
+
+var testViaAsyncOpen4 = makeAsyncTest(bait4URI, testHeaderVal, done);
+var testViaAsyncOpen3 = makeAsyncTest(bait3URI, testHeaderVal, testViaAsyncOpen4);
+var testViaAsyncOpen2 = makeAsyncTest(bait2URI, testHeaderVal2, testViaAsyncOpen3);
+var testViaAsyncOpen  = makeAsyncTest(baitURI,  testHeaderVal, testViaAsyncOpen2);
 
 function testViaXHR()
 {
@@ -211,8 +208,15 @@ function runXHRTest(uri, headerValue)
 
 function done()
 {
-  httpServer.stop(function () {httpServer2.stop(do_test_finished);});
+  httpServer.stop(
+    function ()
+    {
+      httpServer2.stop(do_test_finished);
+    }
+  );
 }
+
+var redirector = new Redirector();
 
 function run_test()
 {
@@ -226,8 +230,6 @@ function run_test()
   httpServer2 = new HttpServer();
   httpServer2.registerPathHandler(redirectedPath, redirected2Handler);
   httpServer2.start(4445);
-
-  redirected = new Redirector();
 
   testViaXHR();
   testViaAsyncOpen();  // will call done() asynchronously for cleanup
